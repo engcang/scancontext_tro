@@ -22,16 +22,16 @@ float deg2rad(float degrees)
 
 float xy2theta( const float & _x, const float & _y )
 {
-    if ( _x >= 0 & _y >= 0) 
+    if ( (_x >= 0) & (_y >= 0)) 
         return (180/M_PI) * atan(_y / _x);
 
-    if ( _x < 0 & _y >= 0) 
+    if ( (_x < 0) & (_y >= 0)) 
         return 180 - ( (180/M_PI) * atan(_y / (-_x)) );
 
-    if ( _x < 0 & _y < 0) 
+    if ( (_x < 0) & (_y < 0)) 
         return 180 + ( (180/M_PI) * atan(_y / _x) );
 
-    if ( _x >= 0 & _y < 0)
+    if ( (_x >= 0) & (_y < 0))
         return 360 - ( (180/M_PI) * atan((-_y) / _x) );
 } // xy2theta
 
@@ -75,7 +75,7 @@ double SCManager::distDirectSC ( MatrixXd &_sc1, MatrixXd &_sc2 )
         VectorXd col_sc1 = _sc1.col(col_idx);
         VectorXd col_sc2 = _sc2.col(col_idx);
         
-        if( col_sc1.norm() == 0 | col_sc2.norm() == 0 )
+        if( (col_sc1.norm() == 0) | (col_sc2.norm() == 0) )
             continue; // don't count this sector pair. 
 
         double sector_similarity = col_sc1.dot(col_sc2) / (col_sc1.norm() * col_sc2.norm());
@@ -150,7 +150,7 @@ std::pair<double, int> SCManager::distanceBtnScanContext( MatrixXd &_sc1, Matrix
 
 MatrixXd SCManager::makeScancontext( pcl::PointCloud<SCPointType> & _scan_down )
 {
-    TicToc t_making_desc;
+    // TicTocV2 t_making_desc;
 
     int num_pts_scan_down = _scan_down.points.size();
 
@@ -189,7 +189,7 @@ MatrixXd SCManager::makeScancontext( pcl::PointCloud<SCPointType> & _scan_down )
             if( desc(row_idx, col_idx) == NO_POINT )
                 desc(row_idx, col_idx) = 0;
 
-    t_making_desc.toc("PolarContext making");
+    // t_making_desc.toc("PolarContext making");
 
     return desc;
 } // SCManager::makeScancontext
@@ -227,6 +227,25 @@ MatrixXd SCManager::makeSectorkeyFromScancontext( Eigen::MatrixXd &_desc )
 } // SCManager::makeSectorkeyFromScancontext
 
 
+const Eigen::MatrixXd& SCManager::getConstRefRecentSCD(void)
+{
+    return polarcontexts_.back();
+}
+
+
+void SCManager::saveScancontextAndKeys( Eigen::MatrixXd _scd )
+{
+    Eigen::MatrixXd ringkey = makeRingkeyFromScancontext( _scd );
+    Eigen::MatrixXd sectorkey = makeSectorkeyFromScancontext( _scd );
+    std::vector<float> polarcontext_invkey_vec = eig2stdvec( ringkey );
+
+    polarcontexts_.push_back( _scd ); 
+    polarcontext_invkeys_.push_back( ringkey );
+    polarcontext_vkeys_.push_back( sectorkey );
+    polarcontext_invkeys_mat_.push_back( polarcontext_invkey_vec );
+} // SCManager::makeAndSaveScancontextAndKeys
+
+
 void SCManager::makeAndSaveScancontextAndKeys( pcl::PointCloud<SCPointType> & _scan_down )
 {
     Eigen::MatrixXd sc = makeScancontext(_scan_down); // v1 
@@ -238,61 +257,51 @@ void SCManager::makeAndSaveScancontextAndKeys( pcl::PointCloud<SCPointType> & _s
     polarcontext_invkeys_.push_back( ringkey );
     polarcontext_vkeys_.push_back( sectorkey );
     polarcontext_invkeys_mat_.push_back( polarcontext_invkey_vec );
-
-    // cout <<polarcontext_vkeys_.size() << endl;
-
 } // SCManager::makeAndSaveScancontextAndKeys
 
+void SCManager::setSCdistThres(double _new_thres)
+{
+    SC_DIST_THRES = _new_thres;
+} // SCManager::setThres
 
-std::pair<int, float> SCManager::detectLoopClosureID ( void )
+void SCManager::setMaximumRadius(double _max_r)
+{
+    PC_MAX_RADIUS = _max_r;
+} // SCManager::setMaximumRadius
+
+std::pair<int, float> SCManager::detectLoopClosureIDBetweenSession (std::vector<float>& _curr_key, Eigen::MatrixXd& _curr_desc)
 {
     int loop_id { -1 }; // init with -1, -1 means no loop (== LeGO-LOAM's variable "closestHistoryFrameID")
 
-    auto curr_key = polarcontext_invkeys_mat_.back(); // current observation (query)
-    auto curr_desc = polarcontexts_.back(); // current observation (query)
+    auto& curr_key = _curr_key;
+    auto& curr_desc = _curr_desc; // current observation (query)
 
-    /* 
-     * step 1: candidates from ringkey tree_
-     */
-    if( polarcontext_invkeys_mat_.size() < NUM_EXCLUDE_RECENT + 1)
+    // step 0: if first, construct the tree in batch
+    if( ! is_tree_batch_made ) // run only once
     {
-        std::pair<int, float> result {loop_id, 0.0};
-        return result; // Early return 
-    }
-
-    // tree_ reconstruction (not mandatory to make everytime)
-    if( tree_making_period_conter % TREE_MAKING_PERIOD_ == 0) // to save computation cost
-    {
-        TicToc t_tree_construction;
-
         polarcontext_invkeys_to_search_.clear();
-        polarcontext_invkeys_to_search_.assign( polarcontext_invkeys_mat_.begin(), polarcontext_invkeys_mat_.end() - NUM_EXCLUDE_RECENT ) ;
+        polarcontext_invkeys_to_search_.assign( polarcontext_invkeys_mat_.begin(), polarcontext_invkeys_mat_.end() ) ;
 
-        polarcontext_tree_.reset(); 
-        polarcontext_tree_ = std::make_unique<InvKeyTree>(PC_NUM_RING /* dim */, polarcontext_invkeys_to_search_, 10 /* max leaf */ );
-        // tree_ptr_->index->buildIndex(); // inernally called in the constructor of InvKeyTree (for detail, refer the nanoflann and KDtreeVectorOfVectorsAdaptor)
-        t_tree_construction.toc("Tree construction");
+        polarcontext_tree_batch_.reset(); 
+        polarcontext_tree_batch_ = std::make_unique<InvKeyTree>(PC_NUM_RING /* dim */, polarcontext_invkeys_to_search_, 10 /* max leaf */ );
+
+        is_tree_batch_made = true; // for running this block only once
     }
-    tree_making_period_conter = tree_making_period_conter + 1;
         
     double min_dist = 10000000; // init with somthing large
     int nn_align = 0;
     int nn_idx = 0;
 
-    // knn search
+    // step 1: knn search
     std::vector<size_t> candidate_indexes( NUM_CANDIDATES_FROM_TREE ); 
     std::vector<float> out_dists_sqr( NUM_CANDIDATES_FROM_TREE );
 
-    TicToc t_tree_search;
     nanoflann::KNNResultSet<float> knnsearch_result( NUM_CANDIDATES_FROM_TREE );
     knnsearch_result.init( &candidate_indexes[0], &out_dists_sqr[0] );
-    polarcontext_tree_->index->findNeighbors( knnsearch_result, &curr_key[0] /* query */, nanoflann::SearchParams(10) ); 
-    t_tree_search.toc("Tree search");
+    polarcontext_tree_batch_->index->findNeighbors( knnsearch_result, &curr_key[0] /* query */, nanoflann::SearchParams(10) ); // error here
 
-    /* 
-     *  step 2: pairwise distance (find optimal columnwise best-fit using cosine distance)
-     */
-    TicToc t_calc_dist;   
+    // step 2: pairwise distance (find optimal columnwise best-fit using cosine distance)
+    // TicTocV2 t_calc_dist;
     for ( int candidate_iter_idx = 0; candidate_iter_idx < NUM_CANDIDATES_FROM_TREE; candidate_iter_idx++ )
     {
         MatrixXd polarcontext_candidate = polarcontexts_[ candidate_indexes[candidate_iter_idx] ];
@@ -309,7 +318,87 @@ std::pair<int, float> SCManager::detectLoopClosureID ( void )
             nn_idx = candidate_indexes[candidate_iter_idx];
         }
     }
-    t_calc_dist.toc("Distance calc");
+    // t_calc_dist.toc("Distance calc");
+
+    // step 3: similarity threshold
+    if( min_dist < SC_DIST_THRES )
+        loop_id = nn_idx; 
+
+    // To do: return also nn_align (i.e., yaw diff)
+    float yaw_diff_rad = deg2rad(nn_align * PC_UNIT_SECTORANGLE);
+    std::pair<int, float> result {loop_id, yaw_diff_rad};
+
+    return result;
+
+} // SCManager::detectLoopClosureIDBetweenSession
+
+
+std::pair<int, float> SCManager::detectLoopClosureID ( void )
+{
+    int loop_id { -1 }; // init with -1, -1 means no loop (== LeGO-LOAM's variable "closestHistoryFrameID")
+
+    auto curr_key = polarcontext_invkeys_mat_.back(); // current observation (query)
+    auto curr_desc = polarcontexts_.back(); // current observation (query)
+
+    /* 
+     * step 1: candidates from ringkey tree_
+     */
+    if( (int)polarcontext_invkeys_mat_.size() < NUM_EXCLUDE_RECENT + 1)
+    {
+        std::pair<int, float> result {loop_id, 0.0};
+        return result; // Early return 
+    }
+
+    // tree_ reconstruction (not mandatory to make everytime)
+    if( tree_making_period_conter % TREE_MAKING_PERIOD_ == 0) // to save computation cost
+    {
+        // TicTocV2 t_tree_construction;
+
+        polarcontext_invkeys_to_search_.clear();
+        polarcontext_invkeys_to_search_.assign( polarcontext_invkeys_mat_.begin(), polarcontext_invkeys_mat_.end() - NUM_EXCLUDE_RECENT ) ;
+
+        polarcontext_tree_.reset(); 
+        polarcontext_tree_ = std::make_unique<InvKeyTree>(PC_NUM_RING /* dim */, polarcontext_invkeys_to_search_, 10 /* max leaf */ );
+        // tree_ptr_->index->buildIndex(); // inernally called in the constructor of InvKeyTree (for detail, refer the nanoflann and KDtreeVectorOfVectorsAdaptor)
+        // t_tree_construction.toc("Tree construction");
+    }
+    tree_making_period_conter = tree_making_period_conter + 1;
+        
+    double min_dist = 10000000; // init with somthing large
+    int nn_align = 0;
+    int nn_idx = 0;
+
+    // knn search
+    std::vector<size_t> candidate_indexes( NUM_CANDIDATES_FROM_TREE ); 
+    std::vector<float> out_dists_sqr( NUM_CANDIDATES_FROM_TREE );
+
+    // TicTocV2 t_tree_search;
+    nanoflann::KNNResultSet<float> knnsearch_result( NUM_CANDIDATES_FROM_TREE );
+    knnsearch_result.init( &candidate_indexes[0], &out_dists_sqr[0] );
+    polarcontext_tree_->index->findNeighbors( knnsearch_result, &curr_key[0] /* query */, nanoflann::SearchParams(10) ); 
+    // t_tree_search.toc("Tree search");
+
+    /* 
+     *  step 2: pairwise distance (find optimal columnwise best-fit using cosine distance)
+     */
+    // TicTocV2 t_calc_dist;   
+    for ( int candidate_iter_idx = 0; candidate_iter_idx < NUM_CANDIDATES_FROM_TREE; candidate_iter_idx++ )
+    {
+        MatrixXd polarcontext_candidate = polarcontexts_[ candidate_indexes[candidate_iter_idx] ];
+        std::pair<double, int> sc_dist_result = distanceBtnScanContext( curr_desc, polarcontext_candidate ); 
+        
+        double candidate_dist = sc_dist_result.first;
+        int candidate_align = sc_dist_result.second;
+
+        if( candidate_dist < min_dist )
+        {
+            min_dist = candidate_dist;
+            nn_align = candidate_align;
+
+            nn_idx = candidate_indexes[candidate_iter_idx];
+        }
+    }
+    // t_calc_dist.toc("Distance calc");
 
     /* 
      * loop threshold check
@@ -319,14 +408,14 @@ std::pair<int, float> SCManager::detectLoopClosureID ( void )
         loop_id = nn_idx; 
     
         // std::cout.precision(3); 
-        cout << "[Loop found] Nearest distance: " << min_dist << " btn " << polarcontexts_.size()-1 << " and " << nn_idx << "." << endl;
-        cout << "[Loop found] yaw diff: " << nn_align * PC_UNIT_SECTORANGLE << " deg." << endl;
+        // cout << "[Loop found] Nearest distance: " << min_dist << " btn " << polarcontexts_.size()-1 << " and " << nn_idx << "." << endl;
+        // cout << "[Loop found] yaw diff: " << nn_align * PC_UNIT_SECTORANGLE << " deg." << endl;
     }
     else
     {
-        std::cout.precision(3); 
-        cout << "[Not loop] Nearest distance: " << min_dist << " btn " << polarcontexts_.size()-1 << " and " << nn_idx << "." << endl;
-        cout << "[Not loop] yaw diff: " << nn_align * PC_UNIT_SECTORANGLE << " deg." << endl;
+        // std::cout.precision(3); 
+        // cout << "[Not loop] Nearest distance: " << min_dist << " btn " << polarcontexts_.size()-1 << " and " << nn_idx << "." << endl;
+        // cout << "[Not loop] yaw diff: " << nn_align * PC_UNIT_SECTORANGLE << " deg." << endl;
     }
 
     // To do: return also nn_align (i.e., yaw diff)
