@@ -53,7 +53,7 @@ class SCManager
 public: 
     SCManager( ) = default; // reserving data space (of std::vector) could be considered. but the descriptor is lightweight so don't care.
 
-    Eigen::MatrixXd makeScancontext( pcl::PointCloud<SCPointType> & _scan_down );
+    Eigen::MatrixXd makeScancontext( const pcl::PointCloud<SCPointType> & _scan_down );
     Eigen::MatrixXd makeRingkeyFromScancontext( Eigen::MatrixXd &_desc );
     Eigen::MatrixXd makeSectorkeyFromScancontext( Eigen::MatrixXd &_desc );
 
@@ -62,8 +62,9 @@ public:
     std::pair<double, int> distanceBtnScanContext ( MatrixXd &_sc1, MatrixXd &_sc2 ); // "D" (eq 6) in the original paper (IROS 18)
 
     // User-side API
-    void makeAndSaveScancontextAndKeys( pcl::PointCloud<SCPointType> & _scan_down );
+    void makeAndSaveScancontextAndKeys( const pcl::PointCloud<SCPointType> & _scan_down );
     std::pair<int, float> detectLoopClosureID( void ); // int: nearest node index, float: relative yaw  
+    std::pair<int, float> detectLoopClosureIDGivenScan( const pcl::PointCloud<SCPointType> & _scan_down ); // int: nearest node index, float: relative yaw  
 
     // for ltslam 
     // User-side API for multi-session
